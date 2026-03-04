@@ -1,44 +1,62 @@
-import { ChatOpenAI } from "@langchain/openai";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatOllama } from "@langchain/ollama";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { createOllamaProvider } from "./ollama.js";
-import type { ModelConfig } from "../types/config.js";
+import type { ModelConfig } from "../types/index.js";
 
-export function createLLMProvider(config: ModelConfig): BaseChatModel {
-  switch (config.provider) {
+export async function createModel(config: ModelConfig): Promise<BaseChatModel> {
+  const provider = config.provider.toLowerCase();
+
+  switch (provider) {
     case "ollama":
-      return createOllamaProvider(config);
+      return new ChatOllama({
+        model: config.modelName,
+        temperature: config.temperature ?? 0,
+        maxRetries: config.maxRetries ?? 3,
+        baseUrl: config.baseUrl ?? "http://localhost:11434",
+      });
 
-    case "openai":
+    case "openai": {
+      const { ChatOpenAI } = await import("@langchain/openai");
       return new ChatOpenAI({
         model: config.modelName,
         temperature: config.temperature ?? 0,
-        maxRetries: config.maxRetries ?? 2,
-        apiKey: config.apiKey,
+        maxRetries: config.maxRetries ?? 3,
+        apiKey: config.apiKey ?? process.env["OPENAI_API_KEY"],
       });
+    }
 
-    case "google":
+    case "anthropic": {
+      const mod = await import("@langchain/anthropic" as string);
+      const AnthropicChat = mod.ChatAnthropic;
+      return new AnthropicChat({
+        model: config.modelName,
+        temperature: config.temperature ?? 0,
+        maxRetries: config.maxRetries ?? 3,
+        apiKey: config.apiKey ?? process.env["ANTHROPIC_API_KEY"],
+      });
+    }
+
+    case "google": {
+      const { ChatGoogleGenerativeAI } = await import("@langchain/google-genai");
+      const apiKey = config.apiKey
+        ?? process.env["GOOGLE_API_KEY"]
+        ?? process.env["GEMINI_API_KEY"]
+        ?? process.env["GOOGLE_GENERATIVE_AI_API_KEY"];
+      if (!apiKey) {
+        throw new Error(
+          "Google API key required. Set one of: GOOGLE_API_KEY, GEMINI_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY"
+        );
+      }
       return new ChatGoogleGenerativeAI({
         model: config.modelName,
         temperature: config.temperature ?? 0,
-        maxRetries: config.maxRetries ?? 2,
-        ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+        maxRetries: config.maxRetries ?? 3,
+        apiKey,
       });
-
-    case "groq":
-      return new ChatOpenAI({
-        model: config.modelName,
-        temperature: config.temperature ?? 0,
-        maxRetries: config.maxRetries ?? 2,
-        apiKey: config.apiKey,
-        configuration: {
-          baseURL: "https://api.groq.com/openai/v1",
-        },
-      });
-
-    default: {
-      const exhaustiveCheck: never = config.provider;
-      throw new Error(`Unsupported provider: ${exhaustiveCheck}`);
     }
+
+    default:
+      throw new Error(
+        `Unknown provider "${provider}". Supported: ollama, openai, anthropic, google`
+      );
   }
 }

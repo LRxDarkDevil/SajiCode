@@ -1,72 +1,69 @@
-/**
- * Copyright (c) 2026 OpenAgent Team
- * Licensed under the MIT License
- *
- * MCP Client for OpenAgent
- * Manages connections to various MCP servers including filesystem operations
- */
-
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import path from "path";
 import fs from "fs/promises";
+import os from "os";
 
 export class MCPClientManager {
   private client: MultiServerMCPClient | null = null;
   private projectPath: string;
+  private serverNames: string[] = [];
 
   constructor(projectPath: string) {
     this.projectPath = projectPath;
   }
 
-  /**
-   * Initialize MCP client with servers from .openagent/mcp-servers.json
-   */
   async initialize(): Promise<void> {
     try {
-      // Load MCP servers from configuration file
-      const mcpServers = await this.loadMCPServersConfig();
-
-      // Only create MCP client if servers are configured
-      if (Object.keys(mcpServers).length > 0) {
-        this.client = new MultiServerMCPClient({
-          mcpServers,
-        });
-      } else {
-        // No servers configured - client remains null
+      const rawServers = await this.loadMCPServersConfig();
+      const names = Object.keys(rawServers);
+      if (names.length === 0) {
         this.client = null;
+        return;
       }
-    } catch (error) {
-      console.error("❌ Failed to initialize MCP client:", error);
-      throw error;
+
+      // Wrap each command to suppress stderr at OS level.
+      // MCP subprocess inherits raw stderr fd — Node.js monkey-patching won't work.
+      const mcpServers: Record<string, any> = {};
+      const isWin = os.platform() === "win32";
+
+      for (const [name, cfg] of Object.entries(rawServers)) {
+        if (isWin) {
+          mcpServers[name] = {
+            ...cfg,
+            command: "cmd",
+            args: ["/c", `${cfg.command} ${(cfg.args ?? []).join(" ")} 2>nul`],
+          };
+        } else {
+          const originalCmd = `${cfg.command} ${(cfg.args ?? []).join(" ")}`;
+          mcpServers[name] = {
+            ...cfg,
+            command: "sh",
+            args: ["-c", `${originalCmd} 2>/dev/null`],
+          };
+        }
+      }
+
+      this.client = new MultiServerMCPClient({ mcpServers });
+      this.serverNames = names;
+    } catch {
+      this.client = null;
     }
   }
 
-  /**
-   * Load MCP servers from .openagent/mcp-servers.json
-   * Supports any MCP server configuration the user wants
-   */
   private async loadMCPServersConfig(): Promise<Record<string, any>> {
-    const configPath = path.join(
-      this.projectPath,
-      ".openagent",
-      "mcp-servers.json"
-    );
+    const configPath = path.join(this.projectPath, ".sajicode", "mcp-servers.json");
 
     try {
       const configContent = await fs.readFile(configPath, "utf-8");
       const config = JSON.parse(configContent);
-
       const mcpServers: Record<string, any> = {};
 
-      // Process each server from user's configuration
       for (const [serverName, serverConfig] of Object.entries(
         config.mcpServers || config.servers || {}
       )) {
         const server = serverConfig as any;
 
-        // Only include enabled servers
-        if (server.enabled !== false) {
-          // Process variables in args (like {{projectPath}})
+        if (server.enabled !== false && server.disabled !== true) {
           const processedArgs =
             server.args?.map((arg: string) =>
               arg.replace("{{projectPath}}", this.projectPath)
@@ -78,67 +75,48 @@ export class MCPClientManager {
             transport: server.transport || "stdio",
             ...(server.env && { env: server.env }),
           };
-
-          console.log(
-            `📋 Loaded MCP server: ${serverName} - ${
-              server.description || "No description"
-            }`
-          );
-        } else {
-          console.log(`⚪ Skipped disabled MCP server: ${serverName}`);
         }
       }
 
-      // Return what was found, even if empty
       return mcpServers;
-    } catch (error) {
-      // Silent error handling - just return empty config
+    } catch {
       return {};
     }
   }
 
-  /**
-   * Get all available tools from MCP servers
-   */
   async getTools() {
-    if (!this.client) {
-      return [];
-    }
+    if (!this.client) return [];
 
     try {
-      const tools = await this.client.getTools();
-      return tools;
-    } catch (error) {
-      // Silent error handling - return empty array if tools can't be loaded
+      return await this.client.getTools();
+    } catch {
       return [];
     }
   }
 
-  /**
-   * Close MCP client connections
-   */
   async close(): Promise<void> {
     if (this.client) {
       try {
         await this.client.close();
         this.client = null;
-        console.log("✅ MCP client connections closed");
-      } catch (error) {
-        console.error("❌ Error closing MCP client:", error);
+      } catch {
+        // Silent close
       }
     }
   }
 
-  /**
-   * Check if client is initialized
-   */
   isInitialized(): boolean {
     return this.client !== null;
   }
 
-  /**
-   * Get the MCP client instance (for advanced usage)
-   */
+  getServerCount(): number {
+    return this.serverNames.length;
+  }
+
+  getServerNames(): string[] {
+    return this.serverNames;
+  }
+
   getClient(): MultiServerMCPClient | null {
     return this.client;
   }
