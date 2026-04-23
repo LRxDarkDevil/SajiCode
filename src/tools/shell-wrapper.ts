@@ -2,10 +2,13 @@ import { LocalShellBackend } from "deepagents";
 import type { LocalShellBackendOptions, ExecuteResponse } from "deepagents";
 import chalk from "chalk";
 import { ProcessStateManager } from "./process-state.js";
+import { checkCommandSecurity, formatSecurityResult, type CommandContext } from "./security-checks.js";
 
 export class SafeShellBackend extends LocalShellBackend {
   private readonly stateManager: ProcessStateManager;
+  private readonly projectPath: string;
   private stateLoaded = false;
+  private recentCommands: string[] = [];
 
   constructor(options: LocalShellBackendOptions & { projectPath: string }) {
     super({
@@ -13,6 +16,7 @@ export class SafeShellBackend extends LocalShellBackend {
       timeout: options.timeout ?? 300,
       inheritEnv: true,
     });
+    this.projectPath = options.projectPath;
     this.stateManager = new ProcessStateManager(options.projectPath);
   }
 
@@ -26,6 +30,40 @@ export class SafeShellBackend extends LocalShellBackend {
   override async execute(command: string): Promise<ExecuteResponse> {
     await this.ensureStateLoaded();
 
+    // SECURITY CHECK: Run 23-check security analysis
+    const securityContext: CommandContext = {
+      command,
+      workingDirectory: this.projectPath,
+      agent: "system",
+      recentCommands: this.recentCommands.slice(-10), // Last 10 commands
+      projectFiles: [] // TODO: Could be populated from file tracker
+    };
+
+    const securityResult = checkCommandSecurity(command, securityContext);
+
+    // Handle security check results
+    if (securityResult.recommendation === "block") {
+      console.log(chalk.red(`  🛑 [SECURITY] Command blocked`));
+      console.log(chalk.red(formatSecurityResult(securityResult)));
+      return {
+        output: `[SECURITY BLOCK] ${securityResult.reason}\n\n${formatSecurityResult(securityResult)}`,
+        exitCode: 1,
+        truncated: false
+      };
+    }
+
+    if (securityResult.recommendation === "require_approval") {
+      console.log(chalk.yellow(`  🚨 [SECURITY] High-risk command detected`));
+      console.log(chalk.yellow(formatSecurityResult(securityResult)));
+      // Note: HITL approval will be handled by the agent's interrupt_on configuration
+      // This just logs the security concern
+    }
+
+    if (securityResult.recommendation === "warn") {
+      console.log(chalk.yellow(`  ⚠️  [SECURITY] ${securityResult.reason}`));
+    }
+
+    // PROCESS STATE CHECK: Check if command should be skipped
     const { skip, reason, output } = await this.stateManager.checkCommand(command);
 
     if (skip) {
@@ -39,11 +77,19 @@ export class SafeShellBackend extends LocalShellBackend {
       return { output: cachedMessage, exitCode: 0, truncated: false };
     }
 
+    // Execute command
     console.log(chalk.gray(`  ▶ [PROCESS STATE] Executing: ${command}`));
     const result = await super.execute(command);
 
+    // Record command execution
     const status = result.exitCode === 0 ? "completed" as const : "failed" as const;
     await this.stateManager.recordCommand(command, status, result.output);
+
+    // Track recent commands for security context
+    this.recentCommands.push(command);
+    if (this.recentCommands.length > 20) {
+      this.recentCommands = this.recentCommands.slice(-20);
+    }
 
     return result;
   }

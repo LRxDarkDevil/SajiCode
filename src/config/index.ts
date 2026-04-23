@@ -13,18 +13,45 @@ const DEFAULT_MODEL_CONFIG: ModelConfig = {
 const DEFAULT_HUMAN_IN_THE_LOOP: HumanInTheLoopConfig = {
   enabled: false,
   tools: {
+    // Shell execution with security checks
     execute: { allowedDecisions: ["approve", "edit", "reject"] },
+    // File operations
     delete_file: { allowedDecisions: ["approve", "reject"] },
+    write_file: false, // Auto-approve writes (security checks handle dangerous patterns)
+    edit_file: false,  // Auto-approve edits
+    // Memory operations (auto-approve - agents need memory access)
+    read_memory_index: false,
+    read_topic: false,
+    write_memory_topic: false,
+    search_transcripts: false,
+    append_transcript: false,
   },
   allowedCommands: [
+    // Package managers
     "npm install",
     "npm run",
+    "npm test",
     "npx tsc",
     "npx tsx",
+    // Safe file operations
     "mkdir",
-    "node ",
-    "dir ",
+    "touch",
+    "cat ",
+    "echo ",
+    // Safe navigation
+    "cd ",
+    "pwd",
     "ls ",
+    "dir ",
+    // Safe git operations
+    "git status",
+    "git log",
+    "git diff",
+    "git branch",
+    // Node/Python execution (security checks will catch dangerous patterns)
+    "node ",
+    "python ",
+    "python3 ",
   ],
 };
 

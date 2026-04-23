@@ -124,26 +124,34 @@ async function runAgentTurn(
   let input: any = initialInput;
 
   while (true) {
-    const stream = await agent.stream(input, {
-      ...sessionConfig,
-      streamMode: ["updates", "messages"],
-      subgraphs: true,
-    });
+    try {
+      const stream = await agent.stream(input, {
+        ...sessionConfig,
+        streamMode: ["updates", "messages", "custom"],
+        subgraphs: true,
+      });
 
-    const interrupt = await renderer.processMultiStream(stream as any);
+      const interrupt = await renderer.processMultiStream(stream as any);
 
-    // No interrupt → turn is finished
-    if (!interrupt) break;
+      // No interrupt → turn is finished
+      if (!interrupt) break;
 
-    // HITL is disabled (shouldn't happen but be safe)
-    if (!hitl?.enabled) break;
+      // HITL is disabled (shouldn't happen but be safe)
+      if (!hitl?.enabled) break;
 
-    // Show the full interrupt block, then collect one decision per action
-    renderer.printInterrupt(interrupt);
-    const decisions = await collectDecisions(renderer, interrupt, hitl);
+      // Show the full interrupt block, then collect one decision per action
+      renderer.printInterrupt(interrupt);
+      const decisions = await collectDecisions(renderer, interrupt, hitl);
 
-    // Resume with decisions — docs say: new Command({ resume: { decisions } })
-    input = new Command({ resume: { decisions } });
+      // Resume with decisions — docs say: new Command({ resume: { decisions } })
+      input = new Command({ resume: { decisions } });
+    } catch (error) {
+      console.error(chalk.red(`\n  ✗ Agent error: ${error instanceof Error ? error.message : String(error)}`));
+      if (error instanceof Error && error.stack) {
+        console.error(chalk.gray(`    ${error.stack.split('\n').slice(1, 3).join('\n    ')}`));
+      }
+      break;
+    }
   }
 }
 

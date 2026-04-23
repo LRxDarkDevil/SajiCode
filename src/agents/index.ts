@@ -22,6 +22,11 @@ import { createFileTrackerTools } from "../tools/file-tracker.js";
 import { createArtifactTools } from "../tools/artifact-tools.js";
 import { createDependencyOrderTool } from "../tools/dependency-graph.js";
 import { createCodeSearchTools } from "../tools/code-search.js";
+import { createStreamingWriteFileTool, createStreamingEditFileTool } from "../tools/streaming-file-tools.js";
+import { createMemoryTools } from "../tools/memory-tools.js";
+import { initThreeLayerMemory, loadPointerIndex, formatPointerIndexForPrompt } from "../memory/three-layer-memory.js";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
 
 function buildInterruptOn(
   hitl: HumanInTheLoopConfig | undefined
@@ -33,6 +38,28 @@ function buildInterruptOn(
     result[toolName] = cfg === true ? true : { allowedDecisions: cfg.allowedDecisions };
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function createExecuteTool(projectPath: string) {
+  const backend = new SafeShellBackend({
+    rootDir: projectPath,
+    projectPath,
+  });
+
+  return tool(
+    async (input: { command: string; timeout?: number }) => {
+      const result = await backend.execute(input.command);
+      return JSON.stringify(result);
+    },
+    {
+      name: "execute",
+      description: "Execute a shell command in the project directory. Use for: mkdir, npm install, git commands, running tests, etc.",
+      schema: z.object({
+        command: z.string().describe("The shell command to execute"),
+        timeout: z.number().optional().describe("Timeout in seconds (default: 120)"),
+      }),
+    }
+  );
 }
 
 export interface SajiCodeOptions {
@@ -48,11 +75,19 @@ export async function createSajiCode(
 
   const model = await createModel(config.modelConfig);
 
+  // Initialize three-layer memory structure
+  await initThreeLayerMemory(config.projectPath);
+  
+  // Load memory pointer index (Layer 1 - always loaded)
+  const memoryIndex = await loadPointerIndex(config.projectPath);
+  const memoryPrompt = formatPointerIndexForPrompt(memoryIndex);
+
   const projectContext = await loadProjectContext(config.projectPath);
   const contextPrompt = buildContextPrompt(onboardingResult);
   const pmPrompt = createPmPrompt(config.projectPath);
   const fullSystemPrompt = [
     pmPrompt,
+    memoryPrompt, // Add memory pointer index to system prompt
     projectContext,
     contextPrompt,
   ].filter(Boolean).join("\n\n");
@@ -77,6 +112,14 @@ export async function createSajiCode(
   const artifactTools = createArtifactTools(config.projectPath);
   const dependencyOrderTool = createDependencyOrderTool();
   const codeSearchTools = createCodeSearchTools(config.projectPath);
+  const executeTool = createExecuteTool(config.projectPath);
+  
+  // Create streaming file tools to replace default ones
+  const streamingWriteFileTool = createStreamingWriteFileTool(config.projectPath);
+  const streamingEditFileTool = createStreamingEditFileTool(config.projectPath);
+  
+  // Create three-layer memory tools
+  const memoryTools = createMemoryTools(config.projectPath);
 
   const agent = await createDeepAgent({
     name: "pm-agent",
@@ -103,6 +146,12 @@ export async function createSajiCode(
       ...artifactTools,
       dependencyOrderTool,
       ...codeSearchTools,
+      executeTool,
+      // Add streaming file tools - these will override the default ones
+      streamingWriteFileTool,
+      streamingEditFileTool,
+      // Add three-layer memory tools
+      ...memoryTools,
     ] as any,
     subagents: domainHeads as any,
     middleware: [judgmentMiddleware, contextGuardMiddleware] as any,

@@ -267,6 +267,7 @@ export class StreamRenderer {
         this.renderModelResponse(nodeData, source, isSubagent);
       }
 
+      // Track subagent working status
       if (isSubagent) {
         const nsKey = namespace.find((s: string) => s.startsWith("tools:")) ?? "";
         this.markWorking(nsKey);
@@ -275,8 +276,8 @@ export class StreamRenderer {
       // Detect completions at ANY level where 'tools' node has ToolMessage results
       if (node === "tools") {
         this.detectComplete(nodeData);
-        // Display tool results
-        this.renderToolResults(nodeData);
+        // Display tool results with better formatting
+        this.renderToolResults(nodeData, isSubagent, source);
       }
     }
 
@@ -308,13 +309,14 @@ export class StreamRenderer {
   /**
    * Render tool execution results
    */
-  private renderToolResults(data: any): void {
+  private renderToolResults(data: any, isSubagent: boolean = false, source: string = "main"): void {
     const messages = (data as any)?.messages ?? [];
     for (const msg of messages) {
       if (msg.type === "tool" && msg.name) {
         const content = String(msg.content ?? "");
         const shortContent = content.slice(0, 150);
-        console.log(`    ${chalk.green("✓")} ${chalk.gray(`${msg.name}: ${shortContent}${content.length > 150 ? "..." : ""}`)}`);
+        const prefix = isSubagent ? `[${source}] ` : "";
+        console.log(`    ${chalk.green("✓")} ${prefix}${chalk.gray(`${msg.name}: ${shortContent}${content.length > 150 ? "..." : ""}`)}`);
       }
     }
   }
@@ -331,6 +333,9 @@ export class StreamRenderer {
     const [message] = data;
     if (!message) return;
 
+    // Stop thinking spinner when any message arrives
+    this.stopThinkingSpinner();
+
     // Tool call chunks (streaming tool invocations)
     if (AIMessageChunk.isInstance(message) && message.tool_call_chunks?.length) {
       for (const tc of message.tool_call_chunks) {
@@ -342,12 +347,20 @@ export class StreamRenderer {
             argsBuffer: "",
             agentName: source,
           };
-          this.startToolSpinner(`Calling ${tc.name}...`);
+          if (!this.isHeadless) {
+            this.startToolSpinner(`Calling ${tc.name}...`);
+          } else {
+            console.log(`  ${GY("→")} ${GY(`Calling ${tc.name}...`)}`);
+          }
         }
         // Args stream in chunks - accumulate them
         if (tc.args) {
           if (this.pendingTool) {
             this.pendingTool.argsBuffer += tc.args;
+            // Show args streaming in real-time for better UX
+            if (!this.isHeadless && tc.args.length > 0) {
+              process.stdout.write(tc.args);
+            }
           }
         }
       }
@@ -357,8 +370,10 @@ export class StreamRenderer {
     if (ToolMessage.isInstance(message)) {
       this.finishPendingTool();
       if (message.name) {
-        const shortResult = String(message.content ?? "").slice(0, 100);
-        console.log(`    ${chalk.cyan("→")} ${chalk.gray(`${message.name}: ${shortResult}${String(message.content ?? "").length > 100 ? "..." : ""}`)}`);
+        const content = String(message.content ?? "");
+        const shortResult = content.slice(0, 150);
+        const prefix = isSubagent ? `[${source}] ` : "";
+        console.log(`    ${chalk.green("✓")} ${prefix}${chalk.gray(`${message.name}: ${shortResult}${content.length > 150 ? "..." : ""}`)}`);
       }
     }
 
@@ -368,9 +383,6 @@ export class StreamRenderer {
       message.text &&
       !message.tool_call_chunks?.length
     ) {
-      // Stop thinking spinner when tokens start arriving
-      this.stopThinkingSpinner();
-      
       if (!this.isHeadless && !this.pendingTool) {
         // Determine display label
         const displaySource = isSubagent ? source : "main";
@@ -389,7 +401,7 @@ export class StreamRenderer {
             ? `[${this.subAgentLabel(displaySource.replace("tools:", "").split(":")[0] ?? "subagent")}]`
             : ">_";
           const color = isSubagent ? chalk.gray : chalk.hex("#FF6A00");
-          process.stdout.write(`\n  ${color(label)} \n`);
+          process.stdout.write(`\n  ${color(label)} `);
           this.currentSource = displaySource;
         }
         
@@ -401,6 +413,10 @@ export class StreamRenderer {
         // Write token to markdown stream for beautiful rendering
         this.mdStream.write(message.text);
         this.midLine = true;
+      } else if (this.isHeadless) {
+        // In headless mode, just print tokens directly
+        const prefix = isSubagent ? `[${source}] ` : "";
+        process.stdout.write(`${prefix}${message.text}`);
       }
     }
   }
@@ -414,9 +430,71 @@ export class StreamRenderer {
     data: any,
     _isSubagent: boolean
   ): void {
-    // Handle custom progress events from tools
+    // Handle file write progress events
     if (data && typeof data === "object") {
-      const { status, progress } = data;
+      const { type, file_path, file_name, progress, message, error } = data;
+      
+      // File write events
+      if (type?.startsWith("file_write")) {
+        const prefix = source !== "main" ? `[${source}] ` : "";
+        const fileName = file_name || file_path?.split(/[\\/]/).pop() || "file";
+        
+        switch (type) {
+          case "file_write_start":
+            console.log(`  ${CY("→")} ${prefix}${GY(`Writing ${fileName}...`)}`);
+            if (message) console.log(`    ${GY(message)}`);
+            break;
+            
+          case "file_write_progress":
+            if (progress !== undefined) {
+              console.log(`    ${YL("●")} ${prefix}${GY(`${progress}% - ${message || 'Writing...'}`)}`);
+            } else if (message) {
+              console.log(`    ${YL("●")} ${prefix}${GY(message)}`);
+            }
+            break;
+            
+          case "file_write_complete":
+            console.log(`    ${G("✓")} ${prefix}${GY(`Successfully wrote ${fileName}`)}`);
+            if (message) console.log(`    ${GY(message)}`);
+            break;
+            
+          case "file_write_error":
+            console.log(`    ${RD("✗")} ${prefix}${RD(`Error writing ${fileName}: ${error || 'Unknown error'}`)}`);
+            break;
+        }
+        return;
+      }
+      
+      // File edit events
+      if (type?.startsWith("file_edit")) {
+        const prefix = source !== "main" ? `[${source}] ` : "";
+        const fileName = file_name || file_path?.split(/[\\/]/).pop() || "file";
+        
+        switch (type) {
+          case "file_edit_start":
+            console.log(`  ${CY("→")} ${prefix}${GY(`Editing ${fileName}...`)}`);
+            break;
+            
+          case "file_edit_progress":
+            if (message) {
+              console.log(`    ${YL("●")} ${prefix}${GY(message)}`);
+            }
+            break;
+            
+          case "file_edit_complete":
+            console.log(`    ${G("✓")} ${prefix}${GY(`Successfully edited ${fileName}`)}`);
+            if (message) console.log(`    ${GY(message)}`);
+            break;
+            
+          case "file_edit_error":
+            console.log(`    ${RD("✗")} ${prefix}${RD(`Error editing ${fileName}: ${error || 'Unknown error'}`)}`);
+            break;
+        }
+        return;
+      }
+      
+      // Handle other custom progress events
+      const { status } = data;
       if (status || progress !== undefined) {
         const icon = status === "complete" ? chalk.green("✓") :
                      status === "error" ? chalk.red("✗") :
