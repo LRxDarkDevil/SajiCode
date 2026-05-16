@@ -123,7 +123,7 @@ export const judgmentMiddleware = createMiddleware({
 
       if (SOURCE_EXTENSIONS.has(ext) && !isSajicodeMd) {
         const lineCount = typeof content === "string" ? content.split("\n").length : 0;
-        const PM_DIRECT_WRITE_THRESHOLD = 150;
+        const PM_DIRECT_WRITE_THRESHOLD = 300;
 
         if (lineCount >= PM_DIRECT_WRITE_THRESHOLD) {
           const msg = `[JUDGMENT BLOCKED] PM Agent: file "${filePath}" has ${lineCount} lines (>= ${PM_DIRECT_WRITE_THRESHOLD}). Large files must be delegated to a specialist agent via task(). You CAN write files under ${PM_DIRECT_WRITE_THRESHOLD} lines directly for small tasks.`;
@@ -198,9 +198,9 @@ export const leadJudgmentMiddleware = createMiddleware({
   ) => {
     const { name: toolName, args } = request.toolCall;
 
-    // Leads can write SMALL source files directly (< 50 lines).
-    // Large files (>= 50 lines) must be delegated to sub-agents via task().
-    // Leads ARE always allowed to: write .json, .md, .yml, .yaml configs.
+    // Leads can write source files directly up to 300 lines.
+    // Files >= 300 lines should be split into smaller modules.
+    // Leads ARE always allowed to: write .json, .md, .yml, .yaml configs of any size.
     if (toolName === "write_file" || toolName === "edit_file") {
       const filePath = (args["file_path"] ?? args["path"] ?? "") as string;
       const content = (args["content"] ?? args["new_str"] ?? "") as string;
@@ -213,16 +213,18 @@ export const leadJudgmentMiddleware = createMiddleware({
 
       if (SOURCE_EXTENSIONS.has(ext)) {
         const lineCount = typeof content === "string" ? content.split("\n").length : 0;
-        const SMALL_FILE_THRESHOLD = 200;
+        const LEAD_FILE_THRESHOLD = 300;
 
-        if (lineCount >= SMALL_FILE_THRESHOLD) {
-          const msg = `[LEAD BLOCKED] File "${filePath}" has ${lineCount} lines (>= ${SMALL_FILE_THRESHOLD}).
+        if (lineCount >= LEAD_FILE_THRESHOLD) {
+          const msg = `[LEAD BLOCKED] File "${filePath}" has ${lineCount} lines (>= ${LEAD_FILE_THRESHOLD}).
 
-Large source files must be delegated to sub-agents via task().
-You CAN write files under ${SMALL_FILE_THRESHOLD} lines directly (index files, configs, utilities).
+This file is too large. You should:
+1. Split it into smaller modules (each under ${LEAD_FILE_THRESHOLD} lines)
+2. Create multiple smaller files instead of one large file
+3. Extract reusable components/utilities into separate files
 
-Dispatch NOW using task(subagent_type="<sub-agent-name>", ...).`;
-          console.log(chalk.red(`  ✗ LEAD BLOCKED: ${filePath} (${lineCount} lines) — must dispatch to sub-agent`));
+You CAN write files under ${LEAD_FILE_THRESHOLD} lines directly.`;
+          console.log(chalk.red(`  ✗ LEAD BLOCKED: ${filePath} (${lineCount} lines) — split into smaller files`));
           return new ToolMessage({
             name: toolName,
             content: msg,
