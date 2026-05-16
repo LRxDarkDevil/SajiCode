@@ -1,5 +1,5 @@
 import { createDeepAgent, CompositeBackend, StoreBackend } from "deepagents";
-import { SafeShellBackend } from "../tools/shell-wrapper.js";
+import { SafeShellBackend, createStreamingExecuteTool } from "../tools/shell-wrapper.js";
 import { MemorySaver } from "@langchain/langgraph";
 import { InMemoryStore } from "@langchain/langgraph-checkpoint";
 import type { ProjectConfig, OnboardingResult, HumanInTheLoopConfig } from "../types/index.js";
@@ -22,11 +22,8 @@ import { createFileTrackerTools } from "../tools/file-tracker.js";
 import { createArtifactTools } from "../tools/artifact-tools.js";
 import { createDependencyOrderTool } from "../tools/dependency-graph.js";
 import { createCodeSearchTools } from "../tools/code-search.js";
-import { createStreamingWriteFileTool, createStreamingEditFileTool } from "../tools/streaming-file-tools.js";
 import { createMemoryTools } from "../tools/memory-tools.js";
 import { initThreeLayerMemory, loadPointerIndex, formatPointerIndexForPrompt } from "../memory/three-layer-memory.js";
-import { tool } from "@langchain/core/tools";
-import { z } from "zod";
 
 function buildInterruptOn(
   hitl: HumanInTheLoopConfig | undefined
@@ -40,27 +37,6 @@ function buildInterruptOn(
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function createExecuteTool(projectPath: string) {
-  const backend = new SafeShellBackend({
-    rootDir: projectPath,
-    projectPath,
-  });
-
-  return tool(
-    async (input: { command: string; timeout?: number }) => {
-      const result = await backend.execute(input.command);
-      return JSON.stringify(result);
-    },
-    {
-      name: "execute",
-      description: "Execute a shell command in the project directory. Use for: mkdir, npm install, git commands, running tests, etc.",
-      schema: z.object({
-        command: z.string().describe("The shell command to execute"),
-        timeout: z.number().optional().describe("Timeout in seconds (default: 120)"),
-      }),
-    }
-  );
-}
 
 export interface SajiCodeOptions {
   config: ProjectConfig;
@@ -112,11 +88,15 @@ export async function createSajiCode(
   const artifactTools = createArtifactTools(config.projectPath);
   const dependencyOrderTool = createDependencyOrderTool();
   const codeSearchTools = createCodeSearchTools(config.projectPath);
-  const executeTool = createExecuteTool(config.projectPath);
-  
-  // Create streaming file tools to replace default ones
-  const streamingWriteFileTool = createStreamingWriteFileTool(config.projectPath);
-  const streamingEditFileTool = createStreamingEditFileTool(config.projectPath);
+
+  // Build the shell backend for the PM agent
+  const shellBackend = new SafeShellBackend({
+    rootDir: config.projectPath,
+    projectPath: config.projectPath,
+  });
+
+  // Create streaming execute tool for shell commands with progress events
+  const streamingExecuteTool = createStreamingExecuteTool(shellBackend);
   
   // Create three-layer memory tools
   const memoryTools = createMemoryTools(config.projectPath);
@@ -127,11 +107,8 @@ export async function createSajiCode(
     systemPrompt: fullSystemPrompt,
     store,
     backend: (agentConfig: any) => new CompositeBackend(
-      new SafeShellBackend({
-        rootDir: config.projectPath,
-        projectPath: config.projectPath,
-      }),
-      { "/memories/": new StoreBackend(agentConfig) }
+      shellBackend,
+      { "/memories/": new StoreBackend(agentConfig) },
     ),
     tools: [
       ...contextTools,
@@ -146,10 +123,8 @@ export async function createSajiCode(
       ...artifactTools,
       dependencyOrderTool,
       ...codeSearchTools,
-      executeTool,
-      // Add streaming file tools - these will override the default ones
-      streamingWriteFileTool,
-      streamingEditFileTool,
+      // Streaming execute tool for shell commands with progress events
+      streamingExecuteTool,
       // Add three-layer memory tools
       ...memoryTools,
     ] as any,

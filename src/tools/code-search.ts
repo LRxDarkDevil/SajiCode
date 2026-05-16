@@ -1,4 +1,5 @@
 import { tool } from "@langchain/core/tools";
+import type { ToolRuntime } from "@langchain/core/tools";
 import { z } from "zod";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -159,17 +160,36 @@ function formatSearchResults(matches: SearchMatch[], query: string): string {
 
 export function createCodeSearchTool(projectPath: string) {
   return tool(
-    async (input: {
-      query: string;
-      fileType?: string;
-      maxResults?: number;
-      caseSensitive?: boolean;
-    }) => {
+    async (
+      input: {
+        query: string;
+        fileType?: string;
+        maxResults?: number;
+        caseSensitive?: boolean;
+      },
+      runtime: ToolRuntime,
+    ) => {
+      const writer = runtime.writer;
+
+      writer?.({
+        type: "code_search_start",
+        query: input.query,
+        message: `Searching codebase for "${input.query}"`,
+      });
+
       const matches = await searchWithGrep(projectPath, input.query, {
         fileGlob: input.fileType,
         maxResults: input.maxResults ?? 30,
         caseSensitive: input.caseSensitive ?? false,
       });
+
+      writer?.({
+        type: "code_search_complete",
+        query: input.query,
+        matchCount: matches.length,
+        message: `Found ${matches.length} matches for "${input.query}"`,
+      });
+
       return formatSearchResults(matches, input.query);
     },
     {
@@ -190,7 +210,18 @@ export function createCodeSearchTool(projectPath: string) {
 
 export function createFindSymbolTool(projectPath: string) {
   return tool(
-    async (input: { symbol: string; fileType?: string }) => {
+    async (
+      input: { symbol: string; fileType?: string },
+      runtime: ToolRuntime,
+    ) => {
+      const writer = runtime.writer;
+
+      writer?.({
+        type: "find_symbol_start",
+        symbol: input.symbol,
+        message: `Finding symbol "${input.symbol}"`,
+      });
+
       const symbolPatterns = [
         `function ${input.symbol}`,
         `class ${input.symbol}`,
@@ -215,7 +246,22 @@ export function createFindSymbolTool(projectPath: string) {
         (m, i, arr) => arr.findIndex((x) => x.file === m.file && x.line === m.line) === i
       );
 
-      if (unique.length === 0) return `Symbol "${input.symbol}" not found in the codebase.`;
+      if (unique.length === 0) {
+        writer?.({
+          type: "find_symbol_complete",
+          symbol: input.symbol,
+          matchCount: 0,
+          message: `Symbol "${input.symbol}" not found`,
+        });
+        return `Symbol "${input.symbol}" not found in the codebase.`;
+      }
+
+      writer?.({
+        type: "find_symbol_complete",
+        symbol: input.symbol,
+        matchCount: unique.length,
+        message: `Found "${input.symbol}" in ${unique.length} locations`,
+      });
 
       const lines: string[] = [`Found "${input.symbol}" defined in ${unique.length} locations:`, ""];
       for (const m of unique) {

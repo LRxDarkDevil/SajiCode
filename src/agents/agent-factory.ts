@@ -1,5 +1,5 @@
 import { createDeepAgent } from "deepagents";
-import { SafeShellBackend } from "../tools/shell-wrapper.js";
+import { SafeShellBackend, createStreamingExecuteTool } from "../tools/shell-wrapper.js";
 import type { CompiledSubAgent } from "deepagents";
 import { MemorySaver } from "@langchain/langgraph";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
@@ -147,6 +147,9 @@ export async function createAgentFromSpec(
     ...createSessionStateTools(projectPath),
     ...createGitTools(projectPath),
     ...createFileTrackerTools(projectPath),
+    // DeepAgents provides write_file, edit_file, read_file automatically via backend
+    // Only need streaming execute tool for shell commands with progress events
+    createStreamingExecuteTool(backend),
   ];
 
  

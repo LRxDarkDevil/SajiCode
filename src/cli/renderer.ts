@@ -299,7 +299,9 @@ export class StreamRenderer {
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         for (const tc of msg.tool_calls) {
           if (tc.name) {
-            console.log(`  ${chalk.cyan("→")} ${chalk.gray(`Calling ${tc.name}...`)}`);
+            const agentLabel = _isSubagent ? this.subAgentLabel(_source.replace("tools:", "").split(":")[0] ?? "agent") : "PM";
+            const icon = _isSubagent ? this.agentIcon(_source.replace("tools:", "").split(":")[0] ?? "agent") : "🎯";
+            console.log(`  ${chalk.cyan("→")} ${icon} ${chalk.hex("#AAAAAA")(agentLabel)} ${chalk.gray("calling")} ${chalk.cyan(tc.name)}`);
           }
         }
       }
@@ -307,16 +309,40 @@ export class StreamRenderer {
   }
 
   /**
-   * Render tool execution results
+   * Render tool execution results with better formatting
+   * Skip rendering for file operations - they're handled in finishPendingTool
    */
   private renderToolResults(data: any, isSubagent: boolean = false, source: string = "main"): void {
     const messages = (data as any)?.messages ?? [];
     for (const msg of messages) {
       if (msg.type === "tool" && msg.name) {
+        // Skip file operations - they're handled in finishPendingTool with enhanced preview
+        if (msg.name === "write_file" || msg.name === "edit_file" || msg.name === "read_file") {
+          continue;
+        }
+        
         const content = String(msg.content ?? "");
-        const shortContent = content.slice(0, 150);
-        const prefix = isSubagent ? `[${source}] ` : "";
-        console.log(`    ${chalk.green("✓")} ${prefix}${chalk.gray(`${msg.name}: ${shortContent}${content.length > 150 ? "..." : ""}`)}`);
+        const agentLabel = isSubagent ? this.subAgentLabel(source.replace("tools:", "").split(":")[0] ?? "agent") : "PM";
+        const icon = isSubagent ? this.agentIcon(source.replace("tools:", "").split(":")[0] ?? "agent") : "🎯";
+        
+        // Format tool result based on tool type
+        if (msg.name === "execute") {
+          // Show command output preview
+          const lines = content.split("\n").slice(0, 3);
+          console.log(`    ${chalk.green("✓")} ${icon} ${chalk.hex("#AAAAAA")(agentLabel)} ${chalk.gray(msg.name)}`);
+          for (const line of lines) {
+            if (line.trim()) {
+              console.log(`      ${chalk.gray(line.slice(0, 100))}`);
+            }
+          }
+          if (content.split("\n").length > 3) {
+            console.log(`      ${chalk.gray(`… ${content.split("\n").length - 3} more lines`)}`);
+          }
+        } else {
+          // Other tools - show short result
+          const shortContent = content.slice(0, 120);
+          console.log(`    ${chalk.green("✓")} ${icon} ${chalk.hex("#AAAAAA")(agentLabel)} ${chalk.gray(msg.name)}: ${chalk.gray(shortContent)}${content.length > 120 ? "..." : ""}`);
+        }
       }
     }
   }
@@ -347,20 +373,27 @@ export class StreamRenderer {
             argsBuffer: "",
             agentName: source,
           };
+          
+          const agentLabel = isSubagent ? this.subAgentLabel(source.replace("tools:", "").split(":")[0] ?? "agent") : "PM";
+          const icon = isSubagent ? this.agentIcon(source.replace("tools:", "").split(":")[0] ?? "agent") : "🎯";
+          
           if (!this.isHeadless) {
-            this.startToolSpinner(`Calling ${tc.name}...`);
+            // For file operations, use a simpler spinner message to avoid glitching
+            if (tc.name === "write_file" || tc.name === "edit_file") {
+              this.startToolSpinner(`${icon} ${agentLabel} ${tc.name}...`);
+            } else {
+              this.startToolSpinner(`${icon} ${agentLabel} calling ${tc.name}...`);
+            }
           } else {
-            console.log(`  ${GY("→")} ${GY(`Calling ${tc.name}...`)}`);
+            console.log(`  ${chalk.cyan("→")} ${icon} ${chalk.hex("#AAAAAA")(agentLabel)} ${chalk.gray(`calling ${tc.name}...`)}`);
           }
         }
         // Args stream in chunks - accumulate them
         if (tc.args) {
           if (this.pendingTool) {
             this.pendingTool.argsBuffer += tc.args;
-            // Show args streaming in real-time for better UX
-            if (!this.isHeadless && tc.args.length > 0) {
-              process.stdout.write(tc.args);
-            }
+            // Don't show args streaming for file operations to avoid glitching
+            // Only show for other tools if needed
           }
         }
       }
@@ -526,25 +559,50 @@ export class StreamRenderer {
         this.renderTask(args);
         break;
 
+      case "read_file": {
+        const fp = String(args.file_path ?? args.path ?? "file");
+        const bn = path.basename(fp);
+        
+        if (this.toolSpinner) {
+          this.toolSpinner.succeed(chalk.green(`✔ Read ${bn}`));
+          this.toolSpinner = null;
+        }
+        // Don't show content preview for read_file - it's too verbose
+        // The agent will use the content internally
+        break;
+      }
+
       case "write_file": {
         const fp = String(args.file_path ?? args.path ?? "file");
         const bn = path.basename(fp);
         const content = String(args.content ?? "");
         const lines = content.split("\n");
+        const sizeKB = Math.round(content.length / 1024);
+        
         if (this.toolSpinner) {
-          this.toolSpinner.succeed(GY(`Saved ${bn} (${lines.length} lines)`));
+          this.toolSpinner.succeed(chalk.green(`✔ Saved ${bn} (${lines.length} lines, ${sizeKB}KB)`));
           this.toolSpinner = null;
         }
-        this.renderFileWritePreview(fp, content);
+        
+        // Show enhanced file preview with syntax highlighting hints
+        this.renderEnhancedFilePreview(fp, content, agentName);
         break;
       }
 
       case "edit_file": {
         const fp = String(args.file_path ?? args.path ?? "file");
+        const bn = path.basename(fp);
+        const oldStr = String(args.old_string ?? "");
+        const newStr = String(args.new_string ?? "");
+        const replaceAll = args.replace_all ?? false;
+        
         if (this.toolSpinner) {
-          this.toolSpinner.succeed(GY(`Edited ${path.basename(fp)}`));
+          this.toolSpinner.succeed(chalk.green(`✔ Edited ${bn}`));
           this.toolSpinner = null;
         }
+        
+        // Show diff preview
+        this.renderEditDiff(fp, oldStr, newStr, replaceAll, agentName);
         break;
       }
 
@@ -574,20 +632,111 @@ export class StreamRenderer {
     }
   }
 
-  /** Show first few lines of the file content being written */
-  private renderFileWritePreview(filePath: string, content: string): void {
+  /** Enhanced file preview with better formatting and agent attribution */
+  private renderEnhancedFilePreview(filePath: string, content: string, agentName: string): void {
     if (!content || content.trim().length === 0) return;
+    
     const lines = content.split("\n");
-    const preview = lines.slice(0, 6);
-    console.log(`    ${GY("┌─")} ${GY(path.basename(filePath))}`);
-    for (const line of preview) {
-      const t = line.length > 90 ? line.slice(0, 87) + "..." : line;
-      console.log(`    ${GY("│")} ${GY(t)}`);
+    const preview = lines.slice(0, 8);
+    const fileName = path.basename(filePath);
+    const ext = path.extname(fileName).toLowerCase();
+    
+    // Agent attribution
+    const label = this.subAgentLabel(agentName);
+    
+    console.log(`    ${chalk.hex("#FF6A00")("┌─")} ${chalk.cyan(fileName)} ${chalk.gray(`by ${label}`)}`);
+    
+    // Show preview with line numbers
+    for (let i = 0; i < preview.length; i++) {
+      const lineNum = chalk.hex("#666666")(`${String(i + 1).padStart(3)} │`);
+      let line = preview[i] ?? "";
+      
+      // Truncate long lines
+      if (line.length > 85) {
+        line = line.slice(0, 82) + "...";
+      }
+      
+      // Basic syntax highlighting hints
+      line = this.highlightLine(line, ext);
+      
+      console.log(`    ${chalk.hex("#FF6A00")("│")} ${lineNum} ${line}`);
     }
-    if (lines.length > 6) {
-      console.log(`    ${GY("│")} ${GY(`… ${lines.length - 6} more lines`)}`);
+    
+    if (lines.length > 8) {
+      console.log(`    ${chalk.hex("#FF6A00")("│")} ${chalk.gray(`… ${lines.length - 8} more lines`)}`);
     }
-    console.log(`    ${GY("└─")}`);
+    console.log(`    ${chalk.hex("#FF6A00")("└─")}`);
+  }
+
+  /** Show diff for file edits */
+  private renderEditDiff(
+    filePath: string,
+    oldStr: string,
+    newStr: string,
+    replaceAll: boolean,
+    agentName: string
+  ): void {
+    const fileName = path.basename(filePath);
+    const label = this.subAgentLabel(agentName);
+    
+    console.log(`    ${chalk.hex("#FF6A00")("┌─")} ${chalk.cyan(fileName)} ${chalk.gray(`edited by ${label}`)}`);
+    
+    // Show old content (removed)
+    const oldLines = oldStr.split("\n").slice(0, 3);
+    for (const line of oldLines) {
+      const truncated = line.length > 80 ? line.slice(0, 77) + "..." : line;
+      console.log(`    ${chalk.hex("#FF6A00")("│")} ${chalk.red("- " + truncated)}`);
+    }
+    
+    if (oldStr.split("\n").length > 3) {
+      console.log(`    ${chalk.hex("#FF6A00")("│")} ${chalk.gray(`  … ${oldStr.split("\n").length - 3} more lines removed`)}`);
+    }
+    
+    // Show new content (added)
+    const newLines = newStr.split("\n").slice(0, 3);
+    for (const line of newLines) {
+      const truncated = line.length > 80 ? line.slice(0, 77) + "..." : line;
+      console.log(`    ${chalk.hex("#FF6A00")("│")} ${chalk.green("+ " + truncated)}`);
+    }
+    
+    if (newStr.split("\n").length > 3) {
+      console.log(`    ${chalk.hex("#FF6A00")("│")} ${chalk.gray(`  … ${newStr.split("\n").length - 3} more lines added`)}`);
+    }
+    
+    if (replaceAll) {
+      console.log(`    ${chalk.hex("#FF6A00")("│")} ${chalk.yellow("⚠ Replaced all occurrences")}`);
+    }
+    
+    console.log(`    ${chalk.hex("#FF6A00")("└─")}`);
+  }
+
+  /** Basic syntax highlighting for common file types */
+  private highlightLine(line: string, ext: string): string {
+    // Keywords for different languages
+    const jsKeywords = /\b(const|let|var|function|class|import|export|from|return|if|else|for|while|async|await)\b/g;
+    const pyKeywords = /\b(def|class|import|from|return|if|else|elif|for|while|async|await|with|as)\b/g;
+    const htmlTags = /<\/?[a-zA-Z][^>]*>/g;
+    const strings = /(["'`])(?:(?=(\\?))\2.)*?\1/g;
+    const comments = /(\/\/.*$|\/\*[\s\S]*?\*\/|#.*$)/gm;
+    
+    // Apply highlighting based on file extension
+    if ([".js", ".ts", ".jsx", ".tsx", ".mjs"].includes(ext)) {
+      line = line.replace(jsKeywords, (match) => chalk.magenta(match));
+      line = line.replace(strings, (match) => chalk.green(match));
+      line = line.replace(comments, (match) => chalk.gray(match));
+    } else if ([".py"].includes(ext)) {
+      line = line.replace(pyKeywords, (match) => chalk.magenta(match));
+      line = line.replace(strings, (match) => chalk.green(match));
+      line = line.replace(comments, (match) => chalk.gray(match));
+    } else if ([".html", ".htm", ".xml"].includes(ext)) {
+      line = line.replace(htmlTags, (match) => chalk.cyan(match));
+      line = line.replace(strings, (match) => chalk.green(match));
+    } else if ([".json"].includes(ext)) {
+      line = line.replace(strings, (match) => chalk.green(match));
+      line = line.replace(/\b(true|false|null)\b/g, (match) => chalk.yellow(match));
+    }
+    
+    return line;
   }
 
   private renderTodoList(args: any, agentName: string): void {

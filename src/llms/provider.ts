@@ -1,6 +1,8 @@
 import { ChatOllama } from "@langchain/ollama";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ModelConfig } from "../types/index.js";
+import { ChatOpenRouter } from "@langchain/openrouter";
+
 
 export async function createModel(config: ModelConfig): Promise<BaseChatModel> {
   const provider = config.provider.toLowerCase();
@@ -23,6 +25,16 @@ export async function createModel(config: ModelConfig): Promise<BaseChatModel> {
         apiKey: config.apiKey ?? process.env["OPENAI_API_KEY"],
       });
     }
+    
+
+   case "openrouter":{
+    return new ChatOpenRouter({
+      model: config.modelName,
+      temperature: config.temperature ?? 0,
+      maxRetries: config.maxRetries ?? 3,
+      apiKey: config.apiKey ?? process.env["OPENROUTER_API_KEY"],
+    });
+   }
 
     case "anthropic": {
       const mod = await import("@langchain/anthropic" as string);

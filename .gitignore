@@ -69,13 +69,6 @@ test-report.*
 .cache/
 *.cache
 # /.sajicode/
-openclaude_dev_prompt.md
-features_to_implment.md
-/ClaudeCode-Docs/
-/langgraph/
 /deepagents-docs/
 Claudecode leak report .md
-implementation_plan.md.resolved
-task.md.resolved
-sajicode_v2_research.md.resolved
-test-sandbox/
+COMPETITIVE_ANALYSIS.md

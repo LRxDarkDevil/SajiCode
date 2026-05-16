@@ -1,5 +1,8 @@
 import { LocalShellBackend } from "deepagents";
-import type { LocalShellBackendOptions, ExecuteResponse } from "deepagents";
+import type { LocalShellBackendOptions, ExecuteResponse, BackendProtocol } from "deepagents";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+import type { ToolRuntime } from "@langchain/core/tools";
 import chalk from "chalk";
 import { ProcessStateManager } from "./process-state.js";
 import { checkCommandSecurity, formatSecurityResult, type CommandContext } from "./security-checks.js";
@@ -93,4 +96,76 @@ export class SafeShellBackend extends LocalShellBackend {
 
     return result;
   }
+}
+
+/**
+ * Streaming execute tool that routes through the backend.
+ * Emits progress events via config.writer while preserving
+ * SafeShellBackend's security checks and process state caching.
+ */
+export function createStreamingExecuteTool(backend: BackendProtocol) {
+  return tool(
+    async (
+      { command }: { command: string; timeout?: number },
+      runtime: ToolRuntime,
+    ) => {
+      const writer = runtime.writer;
+
+      writer?.({
+        type: "execute_start",
+        command,
+        message: `Executing: ${command}`,
+      });
+
+      try {
+        if (!("execute" in backend)) {
+          throw new Error("Backend does not support command execution");
+        }
+
+        const result: ExecuteResponse = await (backend as any).execute(
+          command,
+        );
+
+        if (result.exitCode === 0) {
+          writer?.({
+            type: "execute_complete",
+            command,
+            exitCode: result.exitCode,
+            message: `Command completed (exit code 0)`,
+          });
+        } else {
+          writer?.({
+            type: "execute_error",
+            command,
+            exitCode: result.exitCode,
+            message: `Command failed (exit code ${result.exitCode})`,
+          });
+        }
+
+        return result.output;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        writer?.({
+          type: "execute_error",
+          command,
+          exitCode: -1,
+          message: `Error executing command: ${msg}`,
+        });
+        throw error;
+      }
+    },
+    {
+      name: "execute",
+      description:
+        "Execute a shell command in the project directory with progress streaming. " +
+        "Routes through SafeShellBackend for security checks and process state caching.",
+      schema: z.object({
+        command: z.string().describe("The shell command to execute"),
+        timeout: z
+          .number()
+          .optional()
+          .describe("Timeout in seconds (default: 120)"),
+      }),
+    },
+  );
 }
