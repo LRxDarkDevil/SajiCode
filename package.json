@@ -1,6 +1,6 @@
 {
   "name": "sajicode",
-  "version": "1.0.4",
+  "version": "1.0.9",
   "description": "",
   "main": "dist/index.js",
   "files": [
@@ -20,7 +20,10 @@
     "test:watch": "jest --watch",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "version:patch": "npm version patch && git push && git push --tags",
+    "version:minor": "npm version minor && git push && git push --tags",
+    "version:major": "npm version major && git push && git push --tags"
   },
   "keywords": [],
   "author": "Rahees Ahmed",
@@ -31,12 +34,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/sajicode/sajicode.git"
+    "url": "https://github.com/RaheesAhmed/SajiCode.git"
   },
   "bugs": {
-    "url": "https://github.com/sajicode/sajicode/issues"
+    "url": "https://github.com/RaheesAhmed/SajiCode/issues"
   },
-  "homepage": "https://github.com/sajicode/sajicode#readme",
+  "homepage": "https://github.com/RaheesAhmed/SajiCode#readme",
   "dependencies": {
     "@clack/prompts": "^1.0.1",
     "@inquirer/prompts": "^8.2.1",
